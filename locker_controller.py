@@ -127,9 +127,19 @@ class LockerController:
             if 0 <= index <= 9:
                 control_mask |= (1 << index)
         
-        box_hex = self._int_to_hex_str(control_mask, 2)
-        frame = self._build_frame("0c", "03", box_hex)
+        # 生成大端序的16进制字符串，例如 0021
+        big_endian_hex = self._int_to_hex_str(control_mask, 2)
+        
+        # 将其字节反转以匹配小端序的设备，例如 0021 -> 2100
+        little_endian_hex = big_endian_hex[2:4] + big_endian_hex[0:2]
+        
+        # 使用反转后的字节序来构建帧
+        frame = self._build_frame("0c", "03", little_endian_hex)
         self._send_frame(frame)
+        
+        # box_hex = self._int_to_hex_str(control_mask, 2)
+        # frame = self._build_frame("0c", "03", box_hex)
+        # self._send_frame(frame)
 
     def control_compressor_manual(self, start: bool):
         """
