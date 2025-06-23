@@ -211,9 +211,20 @@ class LockerController:
         if len(data_hex) == 88: # 上传状态帧 (44字节)
             print(f"接收到状态帧: {data_hex}")
             with self.lock:
-                # 锁状态
-                lock_hex = data_hex[72:76]
-                lock_int = int(lock_hex, 16)
+                # --- 锁状态解析 (已修正字节序问题) ---
+                # 1. 提取小端序的16进制字符串, e.g., '03DE'
+                little_endian_hex = data_hex[72:76]
+                
+                # 2. 将其字节反转以得到正确的大端数值, e.g., '03DE' -> 'DE03'
+                if len(little_endian_hex) == 4:
+                    big_endian_hex = little_endian_hex[2:4] + little_endian_hex[0:2]
+                    
+                    # 3. 将正确的大端16进制字符串转换为整数
+                    lock_int = int(big_endian_hex, 16)
+                else:
+                    # 如果数据长度不符，则认为状态为0，避免出错
+                    lock_int = 0
+
                 self.state["lock_status"] = [(lock_int >> i) & 1 == 1 for i in range(12)]
 
                 # 压缩机状态
