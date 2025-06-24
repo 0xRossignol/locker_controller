@@ -151,6 +151,65 @@ def control_compressor_auto():
     status = "启用" if enable else "禁用"
     return jsonify({"status": "success", "message": f"自动温控已{status}"})
 
+@app.route('/api/system/parameters', methods=['POST'])
+def set_system_parameters():
+    """
+    设置终端的系统级参数。
+    这是一个广播命令，将重置设备。
+    需要一个包含所有参数的JSON请求体。
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "请求体不能为空"}), 400
+
+    # 定义必要的参数列表，用于校验
+    required_params = [
+        "device_code", "device_address", "upload_interval",
+        "compressor_delay", "set_temp", "temp_deviation"
+    ]
+    
+    # 检查所有必需的参数是否存在
+    missing_params = [p for p in required_params if p not in data]
+    if missing_params:
+        return jsonify({"error": f"请求体中缺少参数: {', '.join(missing_params)}"}), 400
+
+    try:
+        # 直接将收到的字典传递给控制器的方法
+        controller.set_system_parameters(data)
+        return jsonify({
+            "status": "success",
+            "message": "设置系统参数命令已发送。设备将进行故障复位。"
+        })
+    except Exception as e:
+        app.logger.error(f"设置系统参数时出错: {e}")
+        return jsonify({"status": "error", "message": "处理请求时服务器内部发生错误。"}), 500
+
+@app.route('/api/temperature/deviation', methods=['POST'])
+def set_temp_deviation():
+    """
+    设置温度控制的偏差值。
+    需要一个JSON请求体，例如: {"deviation": 2}
+    """
+    data = request.get_json()
+    if not data or 'deviation' not in data:
+        return jsonify({"error": "请求体中缺少 'deviation' 字段"}), 400
+
+    try:
+        deviation = int(data['deviation'])
+        
+        # 调用控制器的新方法
+        controller.set_temperature_deviation(deviation)
+        
+        return jsonify({
+            "status": "success",
+            "message": f"设置温度控制偏差命令已发送，偏差值: {deviation}°C"
+        })
+    except (ValueError, TypeError):
+        return jsonify({"error": "无效的偏差值，必须是整数"}), 400
+    except Exception as e:
+        app.logger.error(f"设置温度偏差时出错: {e}")
+        return jsonify({"status": "error", "message": "处理请求时服务器内部发生错误。"}), 500
+
 # --- WebSocket 事件处理 ---
 @socketio.on('connect')
 def handle_connect():

@@ -48,8 +48,8 @@ class LockerController:
             "set_point_temp": 0.0,
             "temp_deviation": 0.0,
             "current_temp": 0.0,
-            "compressor_status": "UNKNOWN",  # 'OFF', 'PRE_START', 'ON', 'FAULT'
-            "system_status": "UNKNOWN", # 'STOPPED', 'PRE_START', 'RUNNING'
+            "compressor_status": "OFF",  # 'OFF', 'PRE_START', 'ON', 'FAULT'
+            "system_status": "STOPPED", # 'STOPPED', 'PRE_START', 'RUNNING'
             "lock_status": [False] * 12  # 12个锁的状态 (0-11)
         }
         self.auto_compressor_enabled = False # 自动温控开关
@@ -184,8 +184,127 @@ class LockerController:
         )
         frame = self._build_frame("1c", "05", data_payload)
         self._send_frame(frame)
+        
+        
+    def set_system_parameters(self, params: dict):
+        """
+        设置终端的系统参数 (功能号 0x05)。
+        这是一个广播命令，请确保总线上只有一个设备。
+
+        :param params: 一个包含所有必要参数的字典。
+                       例如: {
+                           "device_code": "FFFFFFFF",
+                           "device_address": 1,
+                           "upload_interval": 1,
+                           "compressor_delay": 30,
+                           "set_temp": 4,
+                           "temp_deviation": 2
+                       }
+        """
+        print(f"发送设置系统参数命令，参数: {params}")
+
+        try:
+            # --- 1. 编码数据部分 (18字节) ---
+            # 根据《终端控制板参数表》的格式进行编码
+            
+            # 设备编码 (5B) - 必须是10个十六进制字符
+            device_code_hex = params['device_code'].ljust(10, 'F')[0:10]
+
+            # 设备地址 (1B)
+            address_hex = self._int_to_hex_str(params['device_address'], 1)
+
+            # 备用 (1B)
+            reserved1_hex = "00"
+
+            # 状态上传时间间隔 T2 (1B)
+            interval_hex = self._int_to_hex_str(params['upload_interval'], 1)
+
+            # 压缩机启动延时 T3 (1B)
+            delay_hex = self._int_to_hex_str(params['compressor_delay'], 1)
+
+            # 备用 (2B)
+            reserved2_hex = "0000"
+
+            # 设定温度 (1B)
+            temp_celsius = params['set_temp']
+            temp_hex = self._encode_temperature_byte(temp_celsius)
+
+            # 温度控制偏差 (1B)
+            deviation_hex = self._int_to_hex_str(params['temp_deviation'], 1)
+
+            # 备用 (2B + 2B + 1B = 5B) - 用FFFF...FF填充
+            reserved3_hex = "FFFF"
+            reserved4_hex = "FFFF"
+            reserved5_hex = "00"
+
+            # 拼接成完整的18字节数据载荷
+            data_payload = (
+                f"{device_code_hex}{address_hex}{reserved1_hex}{interval_hex}"
+                f"{delay_hex}{reserved2_hex}{temp_hex}{deviation_hex}"
+                f"{reserved3_hex}{reserved4_hex}{reserved5_hex}"
+            )
+            
+            # --- 2. 构建并发送帧 ---
+            # 注意：帧长是28 (0x1C), 功能号是 0x05
+            # 设备地址使用广播地址 0x7F
+            frame = self._build_frame_broadcast("1C", "05", data_payload)
+            self._send_frame(frame)
+
+        except KeyError as e:
+            print(f"错误: 缺少必要的参数 '{e.args[0]}'")
+        except Exception as e:
+            print(f"构建设置参数帧时发生错误: {e}")
+
+    def set_temperature_deviation(self, deviation: int):
+        """
+        设置温度控制偏差 (功能号 0x06)。
+        这个值定义了自动温控时，当前温度允许偏离设定温度的范围。
+
+        :param deviation: 偏差值，单位°C。必须是0-255之间的整数。
+        """
+        print(f"发送设置温度控制偏差命令，偏差值: {deviation}°C")
+
+        # 1. 验证输入参数
+        if not (0 <= deviation <= 255):
+            print(f"错误: 偏差值 {deviation} 无效，必须在 0 到 255 之间。")
+            return
+
+        # 2. 准备数据部分 (1字节)
+        # 直接将整数转换为1字节的16进制字符串
+        data_hex = self._int_to_hex_str(deviation, 1)
+
+        # 3. 构建并发送帧
+        # 帧长是11 (0x0B), 功能号是 0x06
+        frame = self._build_frame("0B", "06", data_hex)
+        self._send_frame(frame)
 
     # --- 3. 内部工作方法 ---
+    
+    def _encode_temperature_byte(self, temp_celsius: float) -> str:
+        """辅助函数：将温度值编码为1字节的16进制字符串。"""
+        if not (-64 < temp_celsius < 64):
+             print(f"警告: 温度 {temp_celsius} 超出可编码范围。")
+        
+        sign_bit = '1' if temp_celsius < 0 else '0'
+        abs_temp = abs(temp_celsius)
+        integer_part_bin = f'{int(abs_temp):06b}'
+        epsilon = 1e-9
+        fraction_bit = '1' if (abs_temp % 1) >= (0.5 - epsilon) else '0'
+        
+        temp_bin_str = sign_bit + integer_part_bin + fraction_bit
+        return self._int_to_hex_str(int(temp_bin_str, 2), 1)
+
+    def _build_frame_broadcast(self, length_hex, function_hex, data_hex):
+        """辅助函数：构建一个使用广播地址0x7F的帧。"""
+        self.frame_num = (self.frame_num % 255) + 1
+        frame_num_hex = self._int_to_hex_str(self.frame_num, 1)
+
+        # 使用广播地址 0x7F
+        broadcast_address_hex = "7F"
+        
+        core_part = f"{length_hex}{frame_num_hex}{broadcast_address_hex}{function_hex}{data_hex}"
+        crc = self._calculate_crc(core_part)
+        return f"{self.FRAME_HEADER}{core_part}{crc}{self.FRAME_END}"
 
     def _listen_for_data(self):
         """在后台线程中运行，持续接收和处理来自串口的数据。"""
@@ -231,6 +350,14 @@ class LockerController:
 
                 self.state["lock_status"] = [(lock_int >> i) & 1 == 1 for i in range(12)]
 
+                # 设备编码
+                self.state["device_code"] = data_hex[48:58]
+
+                # 系统状态
+                system_status_hex = data_hex[58:60]
+                sys_status_map = {"00": "STOPPED", "01": "PRE_START", "02": "RUNNING"}
+                self.state["system_status"] = sys_status_map.get(system_status_hex, "UNKNOWN")
+
                 # 压缩机状态
                 comp_status_hex = data_hex[62:64]
                 status_map = {"00": "OFF", "01": "PRE_START", "02": "ON", "03": "FAULT"}
@@ -248,6 +375,8 @@ class LockerController:
                 self.state["temp_deviation"] = int(data_hex[36:38], 16)
                 
                 self.state["last_update_time"] = time.time()
+                
+                
                 
                 state_updated = True
                 
