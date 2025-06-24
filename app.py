@@ -2,6 +2,7 @@ import time
 import atexit
 from flask import Flask, jsonify, request, render_template
 from flask_socketio import SocketIO, emit
+from flask_cors import CORS
 
 from locker_controller import LockerController
 
@@ -15,8 +16,16 @@ FLASK_PORT = 5000
 app = Flask(__name__)
 # 设置一个密钥，用于保护session
 app.config['SECRET_KEY'] = 'just-a-secret-key' 
-# 将Flask应用包装在SocketIO中，并使用gevent作为异步模式
-socketio = SocketIO(app, async_mode='gevent')
+
+# --- 跨域配置 (CORS) ---
+# 为所有的HTTP路由启用CORS
+#    origins="*" 表示允许任何域名的请求。
+#    CORS(app, origins=["http://localhost:3000", "http://your-frontend-domain.com"])
+CORS(app, resources={r"/api/*": {"origins": "*"}})
+# 配置SocketIO以允许跨域连接
+#    cors_allowed_origins="*" 同样表示允许任何来源的WebSocket连接。
+#    同样，在生产环境中应指定具体来源。
+socketio = SocketIO(app, async_mode='gevent', cors_allowed_origins="*")
 
 # --- 回调函数定义 ---
 def broadcast_status_update(state_data):
