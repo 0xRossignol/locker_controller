@@ -1,6 +1,7 @@
 import time
 import atexit
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, render_template
+from flask_socketio import SocketIO, emit
 
 from locker_controller import LockerController
 
@@ -12,12 +13,31 @@ FLASK_PORT = 5000
 
 # --- 应用初始化 ---
 app = Flask(__name__)
+# 设置一个密钥，用于保护session
+app.config['SECRET_KEY'] = 'just-a-secret-key' 
+# 将Flask应用包装在SocketIO中，并使用gevent作为异步模式
+socketio = SocketIO(app, async_mode='gevent')
+
+# --- 回调函数定义 ---
+def broadcast_status_update(state_data):
+    """
+    这个函数会被LockerController调用。
+    它的作用是通过WebSocket向所有连接的客户端广播最新的状态。
+    """
+    print(f"通过WebSocket广播状态: {state_data}")
+    # 'update_status' 是自定义的事件名
+    # namespace='/' 表示广播给默认命名空间下的所有客户端
+    socketio.emit('update_status', state_data, namespace='/')
 
 # --- 创建并启动控制器 (关键步骤) ---
 # 创建一个全局的、唯一的控制器实例
 # 这个实例将在整个Flask应用的生命周期内存在
 print("正在初始化快递柜控制器...")
-controller = LockerController(port=SERIAL_PORT, device_address=DEVICE_ADDRESS)
+controller = LockerController(
+        port=SERIAL_PORT, 
+        device_address=DEVICE_ADDRESS,
+        on_update_callback=broadcast_status_update
+)
 
 # 注册一个程序退出时执行的函数，用于安全地断开串口连接
 @atexit.register
@@ -122,8 +142,65 @@ def control_compressor_auto():
     status = "启用" if enable else "禁用"
     return jsonify({"status": "success", "message": f"自动温控已{status}"})
 
+# --- WebSocket 事件处理 ---
+@socketio.on('connect')
+def handle_connect():
+    """当一个客户端连接到WebSocket时，这个函数被调用。"""
+    print(f"客户端已连接: {request.sid}")
+    # 当新客户端连接时，立即发送一次当前状态，以便它能马上显示数据
+    emit('update_status', controller.get_current_state())
+    
+@socketio.on('disconnect')
+def handle_disconnect():
+    """当客户端断开连接时调用。"""
+    print(f"客户端已断开: {request.sid}")
+    
+@socketio.on('request_status')
+def handle_request_status():
+    """客户端可以主动请求一次最新状态。"""
+    print(f"客户端 {request.sid} 请求了最新状态。")
+    emit('update_status', controller.get_current_state())
+    
+# --- 提供一个简单的HTML页面用于测试 ---
+@app.route('/test_ws')
+def test_ws_page():
+    # 为了方便，直接在这里返回HTML字符串。实际项目中会使用模板。
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>WebSocket 实时监控</title>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.js"></script>
+    </head>
+    <body>
+        <h1>快递柜实时状态 (WebSocket)</h1>
+        <pre id="status-data" style="background-color: #f0f0f0; padding: 10px; border-radius: 5px;"></pre>
+
+        <script>
+            // 连接到WebSocket服务器
+            // 如果服务器和客户端在同一个域，可以省略URL
+            const socket = io();
+
+            socket.on('connect', () => {
+                console.log('成功连接到WebSocket服务器！ ID:', socket.id);
+            });
+
+            // 监听我们自定义的 'update_status' 事件
+            socket.on('update_status', (data) => {
+                console.log('收到新状态:', data);
+                // 将收到的JSON对象格式化后显示在页面上
+                document.getElementById('status-data').textContent = JSON.stringify(data, null, 2);
+            });
+
+            socket.on('disconnect', () => {
+                console.log('与服务器的连接已断开。');
+            });
+        </script>
+    </body>
+    </html>
+    """
 
 # --- 启动Web服务器 ---
 if __name__ == '__main__':
-    print(f" * 将在 http://{FLASK_HOST}:{FLASK_PORT} 上启动Flask服务器")
-    app.run(host=FLASK_HOST, port=FLASK_PORT, debug=False, use_reloader=False)
+    print(f" * 将在 http://{FLASK_HOST}:{FLASK_PORT} 上启动Flask-SocketIO服务器")
+    socketio.run(app, host=FLASK_HOST, port=FLASK_PORT)

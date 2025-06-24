@@ -13,17 +13,19 @@ class LockerController:
     FRAME_HEADER = "FFFF"
     FRAME_END = "FFF7"
 
-    def __init__(self, port, baudrate=38400, device_address=1):
+    def __init__(self, port, baudrate=38400, device_address=1, on_update_callback=None):
         """
         初始化控制器。
 
         :param port: 串口号, e.g., 'COM2'.
         :param baudrate: 波特率.
         :param device_address: 目标设备地址 (1-120).
+        :on_update_callback: 回调函数，当状态更新时会被调用。
         """
         self.port = port
         self.baudrate = baudrate
         self.device_address_hex = self._int_to_hex_str(device_address, 1)
+        self.on_update_callback = on_update_callback
 
         self.ser = None
         self.is_running = False
@@ -207,18 +209,20 @@ class LockerController:
         print("监听线程已停止。")
 
     def _parse_frame(self, data_hex):
+        state_updated = False # 标志位
+        
         """解析合法的帧并更新内部状态。"""
         if len(data_hex) == 88: # 上传状态帧 (44字节)
             print(f"接收到状态帧: {data_hex}")
             with self.lock:
-                # --- 锁状态解析 (已修正字节序问题) ---
+                # --- 锁状态解析---
                 # 1. 提取小端序的16进制字符串, e.g., '03DE'
                 little_endian_hex = data_hex[72:76]
-                
+
                 # 2. 将其字节反转以得到正确的大端数值, e.g., '03DE' -> 'DE03'
                 if len(little_endian_hex) == 4:
                     big_endian_hex = little_endian_hex[2:4] + little_endian_hex[0:2]
-                    
+
                     # 3. 将正确的大端16进制字符串转换为整数
                     lock_int = int(big_endian_hex, 16)
                 else:
@@ -245,6 +249,8 @@ class LockerController:
                 
                 self.state["last_update_time"] = time.time()
                 
+                state_updated = True
+                
             # 自动温控逻辑
             if self.auto_compressor_enabled:
                 self._auto_manage_compressor()
@@ -252,6 +258,15 @@ class LockerController:
         elif len(data_hex) == 28: # ACK帧 (14字节)
             print(f"接收到ACK帧: {data_hex}")
             # 可以根据需要解析ACK帧内容
+            pass
+        
+            # 如果状态已更新并且设置了回调函数，则调用它
+        if state_updated and self.on_update_callback:
+            try:
+                # 传递最新的状态副本
+                self.on_update_callback(self.get_current_state())
+            except Exception as e:
+                print(f"执行更新回调时出错: {e}")
 
     def _auto_manage_compressor(self):
         """根据当前温度和设定值自动控制压缩机。"""
